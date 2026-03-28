@@ -1,9 +1,13 @@
 import telebot
-import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-bot = telebot.TeleBot("8336413288:AAFSBveF_-4H9mtPRJj3SACQTMrjAQo9AlI")
+import datetime
 import sqlite3
+from dotenv import load_dotenv
+import os
 con = sqlite3.connect("TEST_db.db")
+load_dotenv()
+bot_token = os.getenv("BOT_TOKEN")
+bot = telebot.TeleBot(bot_token)
 
 @bot.message_handler(commands=["start"])
 def hello(message):
@@ -20,16 +24,16 @@ def menu_command(message):
 def menu_call(call):
     menu(call.message.chat.id)
 def menu(id):
-    menu_text = "бла бла бла бле бле бле блю блю блю"
+    menu_text = "Здесь вы можете найти интересующую вас олимпиаду, либо управлять сделанными вами подписками(в разработке)."
     keyboard = InlineKeyboardMarkup()
     subscribe = InlineKeyboardButton("Мои подписки", callback_data="dodelaite_bazu_dannih")
-    olimpiad = InlineKeyboardButton("Найти олимпиаду", callback_data="brands")
+    olimpiad = InlineKeyboardButton("Найти олимпиаду", callback_data="brand:")
     keyboard.add(olimpiad, subscribe)
     bot.send_message(id, text=menu_text, reply_markup=keyboard)
-@bot.callback_query_handler(func=lambda call: True)
-def call_management(call):
+@bot.callback_query_handler(func=lambda call: call.data[5] == ":")
+def search_management(call):
     skip_turn = False
-    if call.data == "brands":
+    if call.data[:5] == "brand":
         con = sqlite3.connect("TEST_db.db")
         cursor = con.cursor()
         keyboard = InlineKeyboardMarkup()
@@ -41,7 +45,7 @@ def call_management(call):
             keyboard.add(button)
         button = InlineKeyboardButton("Назад в главное меню", callback_data="go_to_menu")
         keyboard.add(button)
-        bot.send_message(call.message.chat.id, "Выберите бренд олимпиады:", reply_markup=keyboard)
+        bot.send_message(call.message.chat.id, "Выберите олимпиаду:", reply_markup=keyboard)
         cursor.close()
         con.close()
     elif call.data[:5] == "sbjct":
@@ -56,7 +60,7 @@ def call_management(call):
             keyboard.add(button)
         button = InlineKeyboardButton("Назад в главное меню", callback_data="go_to_menu")
         keyboard.add(button)
-        bot.send_message(call.message.chat.id, "Выберите предмет олимпиады:", reply_markup=keyboard)
+        bot.send_message(call.message.chat.id, "Выберите предмет участия:", reply_markup=keyboard)
         cursor.close()
         con.close()
     elif call.data[:5] == "stage":
@@ -91,7 +95,7 @@ def call_management(call):
         keyboard.add(button)
         skip_turn = (len(data) <= 1)
         if not skip_turn:
-            bot.send_message(call.message.chat.id, "Я так и не понял что это, но выбирайте:", reply_markup=keyboard)
+            bot.send_message(call.message.chat.id, "Выберите номер тура олимпиады:", reply_markup=keyboard)
         else:
             turn_id = f"class:{data[0][0]}"
         cursor.close()
@@ -106,14 +110,14 @@ def call_management(call):
         cursor.execute(read_class)
         data = cursor.fetchall()
         for i in data:
-            button = InlineKeyboardButton(i[1], callback_data=f"TheEnd")
+            button = InlineKeyboardButton(i[1], callback_data=f"ThEnd:")
             keyboard.add(button)
         button = InlineKeyboardButton("Назад в главное меню", callback_data="go_to_menu")
         keyboard.add(button)
         bot.send_message(call.message.chat.id, "Выберите класс участия:", reply_markup=keyboard)
         cursor.close()
         con.close()
-    if call.data == "TheEnd":
+    if call.data[:5] == "ThEnd":
         end_text = "К сожалению, разработчики не добавили ничего про эту олимпиаду, можете вернуться в главное меню"
         keyboard = InlineKeyboardMarkup()
         button = InlineKeyboardButton("Назад в глваное меню", callback_data="go_to_menu")
