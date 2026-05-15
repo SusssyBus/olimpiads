@@ -1,7 +1,9 @@
 import telebot
+import time
 import sqlite3
 import os
 import json
+import threading
 from datetime import datetime, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from dotenv import load_dotenv
@@ -622,5 +624,63 @@ def handle_my_subscriptions(call, callback: CallbackData):
         bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=keyboard, parse_mode="Markdown")
     except Exception as e:
         bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="Markdown")
+
+def reminder_checker():
+    while True:
+        try:
+            current_time = datetime.now()
+            query = """
+                SELECT 
+                    r.reminder_id,
+                    r.timer,
+                    d.date as event_date,
+                    c.class_name,
+                    t.turn_name,
+                    s.stage_name,
+                    subj.subject_name,
+                    b.brand_name,
+                    u.user_id
+                FROM Reminder r
+                JOIN date d ON r.date_id = d.date_id
+                JOIN class c ON d.class_id = c.class_id
+                JOIN turn t ON c.turn_id = t.turn_id
+                JOIN stage s ON t.stage_id = s.stage_id
+                JOIN season sea ON s.season_id = sea.season_id
+                JOIN subject subj ON sea.subject_id = subj.subject_id
+                JOIN brand b ON subj.brand_id = b.brand_id
+                JOIN tg_User u ON r.tg_user_id = u.tg_user_id
+            """
+            reminders = safe_db_query(query)
+            
+            for rem in reminders:
+                event_date = datetime.strptime(rem['event_date'], "%Y-%m-%d %H:%M:%S")
+                remind_date = event_date - timedelta(days=rem['timer'])
+                
+                if remind_date <= current_time:
+                    timer_names = {1: "за день", 7: "за неделю", 30: "за месяц"}
+                    timer_text = timer_names.get(rem['timer'], f"за {rem['timer']} дней")
+                    message = (
+                        f"*Напоминание об олимпиаде!*\n\n"
+                        f"*{rem['brand_name']}* — {rem['subject_name']}\n"
+                        f"{rem['stage_name']} | {rem['turn_name']} | {rem['class_name']}\n"
+                        f"Дата проведения: {rem['event_date']}\n"
+                        f"Вы подписаны: {timer_text}\n\n"
+                    )
+                    try:
+                        bot.send_message(rem['user_id'], message, parse_mode="Markdown")
+                        safe_db_query(
+                            "DELETE FROM Reminder WHERE reminder_id = ?",
+                            (rem['reminder_id'],)
+                        )
+                        print(f"Отправлено и удалено напоминание {rem['reminder_id']} для пользователя {rem['user_id']}")
+                    except Exception as e:
+                        print(f"Ошибка отправки напоминания {rem['reminder_id']}: {e}")
+        except Exception as e:
+            print(f"Ошибка в потоке проверки напоминаний: {e}")
+        
+        time.sleep(60)
+
+reminder_thread = threading.Thread(target=reminder_checker, daemon=True)
+reminder_thread.start()
 
 bot.infinity_polling()
