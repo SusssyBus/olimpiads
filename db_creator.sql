@@ -64,4 +64,8 @@ CREATE TABLE IF NOT EXISTS "turn" (
 	PRIMARY KEY("turn_id" AUTOINCREMENT),
 	FOREIGN KEY("stage_id") REFERENCES "stage"("stage_id")
 );
+<<<<<<< HEAD
 COMMIT;
+=======
+COMMIT;
+>>>>>>> 6a8ca36e7f96c43b8125afcacb7ab6f7c5e02c6f
