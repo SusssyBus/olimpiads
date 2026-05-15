@@ -1,8 +1,8 @@
 import telebot
-import datetime
 import sqlite3
 import os
 import json
+from datetime import datetime, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from dotenv import load_dotenv
 from dataclasses import dataclass, field
@@ -21,6 +21,9 @@ if not bot_token:
 bot = telebot.TeleBot(bot_token)
 db = "TEST_db.db"
 
+def get_current_date():
+    return datetime.now() + timedelta(days=-730)
+
 class MessageState(Enum):
     MENU = auto()
     BRAND = auto()
@@ -29,16 +32,19 @@ class MessageState(Enum):
     TURN = auto()
     CLASS = auto()
     CARD = auto()
+    ADD = auto()
+    DELETE = auto()
 
 @dataclass
 class CallbackData:
     state: MessageState
     entity_id: Optional[int] = None
-
+    timer: Optional[int] = None
     def serialize(self) -> str:
         return json.dumps({
             "s": self.state.name,
-            "id": self.entity_id
+            "id": self.entity_id,
+            "t": self.timer
         })
     
     @classmethod
@@ -47,7 +53,8 @@ class CallbackData:
             parsed = json.loads(data)
             return cls(
                 state=MessageState[parsed["s"]],
-                entity_id=parsed.get("id")
+                entity_id=parsed.get("id"),
+                timer=parsed.get("t")
             )
         except (KeyError) as e:
             print(f"Ошибка десериализации callback: {e}")
@@ -58,8 +65,8 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-def create_callback_button(text: str, state: MessageState, entity_id: int = None) -> InlineKeyboardButton:
-    callback = CallbackData(state=state, entity_id=entity_id)
+def create_callback_button(text: str, state: MessageState, entity_id: int = None, timer: int = None) -> InlineKeyboardButton:
+    callback = CallbackData(state=state, entity_id=entity_id, timer=timer)
     return InlineKeyboardButton(text, callback_data=callback.serialize())
 
 def create_back_button(target_state: MessageState = MessageState.MENU) -> InlineKeyboardButton:
@@ -101,7 +108,7 @@ def hello_message(message):
 
 @bot.message_handler(commands=["menu"])
 def menu_command(message):
-    handle_menu_state(message.chat.id)
+    handle_menu_state(message.from_user.id, message.chat.id)
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_all_callbacks(call):
@@ -112,9 +119,10 @@ def handle_all_callbacks(call):
         return
 
     id = call.message.chat.id
+    user_id = call.message.from_user.id
     match callback.state:
         case MessageState.MENU:
-            handle_menu_state(id, callback)
+            handle_menu_state(user_id, id, callback)
         case MessageState.BRAND:
             handle_brand_state(id, callback)
         case MessageState.SUBJECT:
@@ -126,9 +134,20 @@ def handle_all_callbacks(call):
         case MessageState.CLASS:
             handle_class_state(id, callback)
         case MessageState.CARD:
-            handle_card_state(id, callback)
+            handle_card_state(call, callback)
+        case MessageState.ADD:
+            if callback.timer is None:
+                handle_add_state(call, callback)
+            else:
+                handle_add_final(call, callback)
+        case MessageState.DELETE:
+            if callback.timer is None:
+                handle_delete_state(call, callback)
+            else:
+                handle_delete_final(call, callback)
+            
 
-def handle_menu_state(id, callback: CallbackData = None):
+def handle_menu_state(user_id, id, callback: CallbackData = None):
     menu_text = (
         "Здесь вы можете найти интересующую вас олимпиаду, "
         "либо управлять сделанными вами подписками (в разработке)."
@@ -163,7 +182,7 @@ def handle_subject_state(id, callback: CallbackData):
         bot.send_message(id, "Ошибка: не выбран бренд.")
         return
 
-    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard = InlineKeyboardMarkup()
 
     subjects = safe_db_query(
         "SELECT subject_id, subject_name FROM subject WHERE brand_id = ?",
@@ -190,9 +209,9 @@ def handle_stage_state(id, callback: CallbackData):
     if callback.entity_id is None:
         bot.send_message(id, "Ошибка: не выбран предмет.")
         return
-    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard = InlineKeyboardMarkup()
 
-    current_year = datetime.datetime.now().year
+    current_year = datetime.now().year
     next_season = f"{current_year}/{current_year + 1}"
     prev_season = f"{current_year - 1}/{current_year}"
 
@@ -225,7 +244,7 @@ def handle_turn_state(id, callback: CallbackData):
     if callback.entity_id is None:
         bot.send_message(id, "Ошибка: не выбран этап.")
         return
-    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard = InlineKeyboardMarkup()
 
     turns = safe_db_query(
         "SELECT turn_id, turn_name FROM turn WHERE stage_id = ?",
@@ -259,7 +278,7 @@ def handle_class_state(id, callback: CallbackData):
     if callback.entity_id is None:
         bot.send_message(id, "Ошибка: не выбран тур.")
         return
-    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard = InlineKeyboardMarkup()
 
     classes = safe_db_query(
         "SELECT class_id, class_name FROM class WHERE turn_id = ?",
@@ -281,11 +300,11 @@ def handle_class_state(id, callback: CallbackData):
 
     bot.send_message(id, "Выберите класс участия:", reply_markup=keyboard)
 
-def handle_card_state(id, callback: CallbackData):
+def handle_card_state(call, callback: CallbackData):
     if callback.entity_id is None:
-        bot.send_message(id, "Ошибка: не выбран класс участия.")
+        bot.send_message(call.message.chat.id, "Ошибка: не выбран класс участия.")
         return
-    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard = InlineKeyboardMarkup()
 
     end_text = (
         "Выбор завершён!\n\n"
@@ -293,9 +312,219 @@ def handle_card_state(id, callback: CallbackData):
         "Вы можете вернуться в главное меню."
     )
 
-    keyboard = InlineKeyboardMarkup(row_width=1)
+    query1 = """
+            SELECT EXISTS
+            (SELECT reminder_id FROM Reminder
+            JOIN date ON date.date_id = Reminder.date_id
+            JOIN tg_User ON tg_User.tg_user_id = Reminder.tg_user_id
+            WHERE date.class_id = ? AND tg_user.user_id = ?)"""
+    query2 = "SELECT date_id FROM date JOIN class ON date.class_id = ?"
+    
+    exists = safe_db_query(query1, (callback.entity_id, call.from_user.id))[0][0]
+    date = safe_db_query(query2, (callback.entity_id,))[0]
+    add_button = create_callback_button("Добавить напоминалку на эту олимпиаду", 
+                                        MessageState.ADD, date["date_id"])
+    keyboard.add(add_button)
+    if (exists):
+        delete_button = create_callback_button("Удалить напоминалку",
+                                               MessageState.DELETE, date[0])
+        keyboard.add(delete_button)
+
     keyboard.add(create_back_button(MessageState.MENU))
 
-    bot.send_message(id, text=end_text, reply_markup=keyboard)
+    bot.send_message(call.message.chat.id, text=end_text, reply_markup=keyboard)
+
+def handle_add_state(call, callback: CallbackData):
+    if callback.entity_id is None:
+        bot.send_message(call.message.chat.id, "Ошибка: не выбрана дата олимпиады.")
+        return
+
+    date_id = callback.entity_id
+    user_id = call.from_user.id
+
+    tg_user = safe_db_query(
+        "SELECT tg_user_id FROM tg_User WHERE user_id = ?",
+        (user_id,)
+    )
+    if not tg_user:
+        bot.send_message(call.message.chat.id, "Вы не зарегистрированы. Напишите /start")
+        return
+    tg_user_id = tg_user[0]['tg_user_id']
+
+    date = safe_db_query(
+        "SELECT date FROM date WHERE date_id = ?",
+        (date_id,)
+    )
+    if not date:
+        bot.send_message(call.message.chat.id, "Ошибка: дата олимпиады не найдена.")
+        return
+    event_date = datetime.strptime(date[0]['date'], "%Y-%m-%d %H:%M:%S")
+
+    options = [
+        (1, "За день"),
+        (7, "За неделю"),
+        (30, "За месяц")
+    ]
+
+    keyboard = InlineKeyboardMarkup()
+    for days, label in options:
+        remind_date = event_date - timedelta(days=days)
+        now = get_current_date()
+
+        if remind_date <= now:
+            continue
+
+        existing = safe_db_query(
+            "SELECT reminder_id FROM Reminder WHERE tg_user_id = ? AND date_id = ? AND timer = ?",
+            (tg_user_id, date_id, days)
+        )
+        if existing:
+            continue
+
+        btn = create_callback_button(
+            text=label,
+            state=MessageState.ADD,
+            entity_id=date_id,
+            timer=days
+        )
+        keyboard.add(btn)
+
+    if not keyboard.keyboard:
+        bot.send_message(
+            call.message.chat.id,
+            "Нет доступных вариантов напоминания (либо все даты уже прошли, либо вы уже подписаны на все возможные таймеры)."
+        )
+        return
+
+    keyboard.add(create_back_button(MessageState.MENU))
+    bot.send_message(
+        call.message.chat.id,
+        "Выберите, за сколько дней до олимпиады вы хотите получить напоминание:",
+        reply_markup=keyboard
+    )
+
+
+def handle_add_final(call, callback: CallbackData):
+    if callback.entity_id is None or callback.timer is None:
+        bot.send_message(call.message.chat.id, "Ошибка: не хватает данных для создания напоминания.")
+        return
+
+    date_id = callback.entity_id
+    days = callback.timer
+    user_id = call.from_user.id
+
+    tg_user = safe_db_query(
+        "SELECT tg_user_id FROM tg_User WHERE user_id = ?",
+        (user_id,)
+    )
+    if not tg_user:
+        bot.send_message(call.message.chat.id, "Ошибка регистрации. Напишите /start")
+        return
+    tg_user_id = tg_user[0]['tg_user_id']
+
+    date = safe_db_query(
+        "SELECT date FROM date WHERE date_id = ?",
+        (date_id,)
+    )
+    if not date:
+        bot.send_message(call.message.chat.id, "Дата олимпиады не найдена.")
+        return
+    event_date = datetime.strptime(date[0]['date'], "%Y-%m-%d %H:%M:%S")
+    remind_date = event_date - timedelta(days=days)
+
+    if remind_date <= get_current_date():
+        bot.send_message(call.message.chat.id, "Дата отправки напоминания уже прошла. Нельзя добавить.")
+        return
+
+    existing = safe_db_query(
+        "SELECT reminder_id FROM Reminder WHERE tg_user_id = ? AND date_id = ? AND timer = ?",
+        (tg_user_id, date_id, days)
+    )
+    if existing:
+        bot.send_message(call.message.chat.id, "Такое напоминание уже существует.")
+        return
+    
+    do_it = safe_db_query(
+        "INSERT INTO Reminder (tg_user_id, date_id, timer) VALUES (?, ?, ?)",
+        (tg_user_id, date_id, days)
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        f"Напоминание добавлено! Вы получите уведомление за {days} день(дней) до олимпиады."
+    )
+
+def handle_delete_state(call, callback: CallbackData):
+    if callback.entity_id is None:
+        bot.send_message(call.message.chat.id, "Ошибка: не указана дата.")
+        return
+
+    date_id = callback.entity_id
+    user_id = call.from_user.id
+
+    tg_user = safe_db_query(
+        "SELECT tg_user_id FROM tg_User WHERE user_id = ?",
+        (user_id,)
+    )
+    if not tg_user:
+        bot.send_message(call.message.chat.id, "Ошибка: пользователь не найден.")
+        return
+    tg_user_id = tg_user[0]['tg_user_id']
+
+    reminders = safe_db_query(
+        "SELECT timer FROM Reminder WHERE tg_user_id = ? AND date_id = ?",
+        (tg_user_id, date_id)
+    )
+    if not reminders:
+        bot.send_message(call.message.chat.id, "У вас нет напоминаний на эту дату.")
+        return
+
+    timer_names = {1: "За день", 7: "За неделю", 30: "За месяц"}
+
+    keyboard = InlineKeyboardMarkup()
+    for row in reminders:
+        timer = row['timer']
+        name = timer_names.get(timer, f"за {timer} дней")
+        btn = create_callback_button(
+            text=f"Удаляем {name}",
+            state=MessageState.DELETE,
+            entity_id=date_id,
+            timer=timer
+        )
+        keyboard.add(btn)
+
+    keyboard.add(create_back_button(MessageState.MENU))
+    bot.send_message(
+        call.message.chat.id,
+        "Выберите напоминание для удаления:",
+        reply_markup=keyboard
+    )
+
+def handle_delete_final(call, callback: CallbackData):
+    if callback.entity_id is None or callback.timer is None:
+        bot.send_message(call.message.chat.id, "Ошибка: не хватает данных для удаления.")
+        return
+
+    date_id = callback.entity_id
+    days = callback.timer
+    user_id = call.from_user.id
+
+    tg_user = safe_db_query(
+        "SELECT tg_user_id FROM tg_User WHERE user_id = ?",
+        (user_id,)
+    )
+    if not tg_user:
+        bot.send_message(call.message.chat.id, "Ошибка: пользователь не найден.")
+        return
+    tg_user_id = tg_user[0]['tg_user_id']
+
+    do_it = safe_db_query(
+        "DELETE FROM Reminder WHERE tg_user_id = ? AND date_id = ? AND timer = ?",
+        (tg_user_id, date_id, days)
+    )
+
+    timer_names = {1: "за день", 7: "за неделю", 30: "за месяц"}
+    name = timer_names.get(days, f"за {days} дней")
+    bot.send_message(call.message.chat.id, f"Напоминание {name} удалено.")
 
 bot.infinity_polling()

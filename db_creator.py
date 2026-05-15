@@ -64,9 +64,10 @@ CREATE TABLE IF NOT EXISTS class (
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS Reminder (
     reminder_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    class_id INTEGER,
+    date_id INTEGER,
+    timer INTEGER,
     tg_user_id INTEGER,
-    FOREIGN KEY (class_id) REFERENCES class(class_id),
+    FOREIGN KEY (date_id) REFERENCES date(date_id),
     FOREIGN KEY (tg_user_id) REFERENCES tg_User(tg_user_id)
 )
 ''')
@@ -74,8 +75,9 @@ CREATE TABLE IF NOT EXISTS Reminder (
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS date (
     date_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    reminder_id INTEGER,
-    FOREIGN KEY (reminder_id) REFERENCES Reminder(reminder_id)
+    date VARCHAR (100) NOT NULL,
+    class_id INTEGER,
+    FOREIGN KEY (class_id) REFERENCES class(class_id)
 )
 ''')
 
