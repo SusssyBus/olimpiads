@@ -34,17 +34,20 @@ class MessageState(Enum):
     CARD = auto()
     ADD = auto()
     DELETE = auto()
+    SUBSCRIBE = auto()
 
 @dataclass
 class CallbackData:
     state: MessageState
     entity_id: Optional[int] = None
     timer: Optional[int] = None
+    page: Optional[int] = None
     def serialize(self) -> str:
         return json.dumps({
             "s": self.state.name,
             "id": self.entity_id,
-            "t": self.timer
+            "t": self.timer,
+            "p": self.page
         })
     
     @classmethod
@@ -54,7 +57,8 @@ class CallbackData:
             return cls(
                 state=MessageState[parsed["s"]],
                 entity_id=parsed.get("id"),
-                timer=parsed.get("t")
+                timer=parsed.get("t"),
+                page=parsed.get("p")
             )
         except (KeyError) as e:
             print(f"Ошибка десериализации callback: {e}")
@@ -65,8 +69,9 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-def create_callback_button(text: str, state: MessageState, entity_id: int = None, timer: int = None) -> InlineKeyboardButton:
-    callback = CallbackData(state=state, entity_id=entity_id, timer=timer)
+def create_callback_button(text: str, state: MessageState,
+                           entity_id: int = None, timer: int = None, page: int = None) -> InlineKeyboardButton:
+    callback = CallbackData(state=state, entity_id=entity_id, timer=timer, page=page)
     return InlineKeyboardButton(text, callback_data=callback.serialize())
 
 def create_back_button(target_state: MessageState = MessageState.MENU) -> InlineKeyboardButton:
@@ -145,6 +150,8 @@ def handle_all_callbacks(call):
                 handle_delete_state(call, callback)
             else:
                 handle_delete_final(call, callback)
+        case MessageState.SUBSCRIBE:
+            handle_my_subscriptions(call, callback)
             
 
 def handle_menu_state(user_id, id, callback: CallbackData = None):
@@ -153,9 +160,9 @@ def handle_menu_state(user_id, id, callback: CallbackData = None):
         "либо управлять сделанными вами подписками (в разработке)."
     )
     keyboard = InlineKeyboardMarkup()
-    #subscribe_button
+    subscribe_button = create_callback_button("Посмотреть свои олимпиады", MessageState.SUBSCRIBE)
     olimpiads_button = create_callback_button("Выбрать олимпиаду", MessageState.BRAND)
-    keyboard.add(olimpiads_button)
+    keyboard.add(olimpiads_button, subscribe_button)
     bot.send_message(id, text=menu_text, reply_markup=keyboard)
 
 def handle_brand_state(id, callback: CallbackData):
@@ -526,5 +533,94 @@ def handle_delete_final(call, callback: CallbackData):
     timer_names = {1: "за день", 7: "за неделю", 30: "за месяц"}
     name = timer_names.get(days, f"за {days} дней")
     bot.send_message(call.message.chat.id, f"Напоминание {name} удалено.")
+
+def handle_my_subscriptions(call, callback: CallbackData):
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
+    page = callback.page if callback.page is not None else 0
+    items_per_page = 3
+
+    tg_user_row = safe_db_query(
+        "SELECT tg_user_id FROM tg_User WHERE user_id = ?",
+        (user_id,)
+    )
+    if not tg_user_row:
+        bot.send_message(chat_id, "Вы не зарегистрированы. Напишите /start")
+        return
+    tg_user_id = tg_user_row[0]['tg_user_id']
+
+    query = """
+        SELECT 
+            r.reminder_id,
+            r.timer,
+            r.date_id,
+            d.date as event_date,
+            c.class_name,
+            t.turn_name,
+            s.stage_name,
+            subj.subject_name,
+            b.brand_name
+        FROM Reminder r
+        JOIN date d ON r.date_id = d.date_id
+        JOIN class c ON d.class_id = c.class_id
+        JOIN turn t ON c.turn_id = t.turn_id
+        JOIN stage s ON t.stage_id = s.stage_id
+        JOIN season sea ON s.season_id = sea.season_id
+        JOIN subject subj ON sea.subject_id = subj.subject_id
+        JOIN brand b ON subj.brand_id = b.brand_id
+        WHERE r.tg_user_id = ?
+        ORDER BY d.date ASC
+    """
+    all_reminders = safe_db_query(query, (tg_user_id,))
+    total = len(all_reminders)
+
+    if total == 0:
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(create_back_button(MessageState.MENU))
+        bot.send_message(chat_id, "У вас пока нет ни одной подписки.", reply_markup=keyboard)
+        return
+
+    start = page * items_per_page
+    end = start + items_per_page
+    reminders_page = all_reminders[start:end]
+    total_pages = (total + items_per_page - 1) // items_per_page
+
+    timer_names = {1: "за день", 7: "за неделю", 30: "за месяц"}
+    message_lines = [f"*Ваши подписки* (страница {page+1} из {total_pages}):\n"]
+    for idx, rem in enumerate(reminders_page, start=start+1):
+        timer_text = timer_names.get(rem['timer'], f"за {rem['timer']} дней")
+        message_lines.append(
+            f"{idx}. *{rem['brand_name']}* — {rem['subject_name']}\n"
+            f"   {rem['stage_name']} | {rem['turn_name']} | {rem['class_name']}\n"
+            f"   Дата: {rem['event_date']}\n"
+            f"   Напоминание: {timer_text}\n"
+        )
+    text = "\n".join(message_lines)
+
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    for rem in reminders_page:
+        btn = create_callback_button(
+            text=f"Удалить [{timer_names.get(rem['timer'], rem['timer'])}]",
+            state=MessageState.DELETE,
+            entity_id=rem['date_id'],
+            timer=rem['timer'],
+            page=page
+        )
+        keyboard.add(btn)
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(create_callback_button("Назад", MessageState.SUBSCRIBE, page=page-1))
+    if page + 1 < total_pages:
+        nav_buttons.append(create_callback_button("Вперёд", MessageState.SUBSCRIBE, page=page+1))
+    if nav_buttons:
+        keyboard.row(*nav_buttons)
+
+    keyboard.add(create_back_button(MessageState.MENU))
+
+    try:
+        bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception as e:
+        bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="Markdown")
 
 bot.infinity_polling()
