@@ -71,6 +71,7 @@ def safe_db_query(query: str, params: tuple = ()) -> List[sqlite3.Row]:
         cursor = conn.cursor()
         cursor.execute(query, params)
         results = cursor.fetchall()
+        conn.commit()
         cursor.close()
         conn.close()
         return results
@@ -80,6 +81,12 @@ def safe_db_query(query: str, params: tuple = ()) -> List[sqlite3.Row]:
     
 @bot.message_handler(commands=["start"])
 def hello_message(message):
+    query = """
+            INSERT INTO tg_User (user_id)
+            VALUES (?)
+            """
+    safe_db_query(query, (message.from_user.id,))
+    
     start_text = (
         "Здравствуйте! Этот бот поможет вам не забыть про свои олимпиады.\n\n"
         "Он будет напоминать вам про начало именно ваших олимпиад.\n"
@@ -281,7 +288,7 @@ def handle_card_state(id, callback: CallbackData):
     keyboard = InlineKeyboardMarkup(row_width=1)
 
     end_text = (
-        "✅ Выбор завершён!\n\n"
+        "Выбор завершён!\n\n"
         "К сожалению, разработчики не добавили ничего про эту олимпиаду.\n"
         "Вы можете вернуться в главное меню."
     )
