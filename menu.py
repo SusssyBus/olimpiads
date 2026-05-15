@@ -1,127 +1,294 @@
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 import datetime
 import sqlite3
-from dotenv import load_dotenv
 import os
-con = sqlite3.connect("TEST_db.db")
+import json
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from dotenv import load_dotenv
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Optional, List, Tuple
+
 load_dotenv()
 bot_token = os.getenv("BOT_TOKEN")
-bot = telebot.TeleBot(bot_token)
 
+if not bot_token:
+    raise RuntimeError(
+        "BOT_TOKEN не найден в переменных окружения!"
+        "Проверьте .env файл или переменные среды."
+    )
+
+bot = telebot.TeleBot(bot_token)
+db = "TEST_db.db"
+
+class MessageState(Enum):
+    MENU = auto()
+    BRAND = auto()
+    SUBJECT = auto()
+    STAGE = auto()
+    TURN = auto()
+    CLASS = auto()
+    CARD = auto()
+
+@dataclass
+class CallbackData:
+    state: MessageState
+    entity_id: Optional[int] = None
+
+    def serialize(self) -> str:
+        return json.dumps({
+            "s": self.state.name,
+            "id": self.entity_id
+        })
+    
+    @classmethod
+    def deserialize(cls, data: str) -> "CallbackData":
+        try:
+            parsed = json.loads(data)
+            return cls(
+                state=MessageState[parsed["s"]],
+                entity_id=parsed.get("id")
+            )
+        except (KeyError) as e:
+            print(f"Ошибка десериализации callback: {e}")
+            raise
+
+def get_db_connection():
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def create_callback_button(text: str, state: MessageState, entity_id: int = None) -> InlineKeyboardButton:
+    callback = CallbackData(state=state, entity_id=entity_id)
+    return InlineKeyboardButton(text, callback_data=callback.serialize())
+
+def create_back_button(target_state: MessageState = MessageState.MENU) -> InlineKeyboardButton:
+    return create_callback_button("Назад в меню", target_state)
+
+def safe_db_query(query: str, params: tuple = ()) -> List[sqlite3.Row]:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return results
+    except sqlite3.Error as e:
+        print(f"Ошибка БД: {e}")
+        return []
+    
 @bot.message_handler(commands=["start"])
-def hello(message):
-    start_text = "Здравствуйте, этот бот поможет вам не забыть про свои олимпиады! Он будет напоминать вам про начало именно ваших олимпиад.\n\nПо кнопке ниже вы можете перейти в меню для настройки напоминаний. Также в меню можно попасть по команде \"\\menu\""
+def hello_message(message):
+    start_text = (
+        "Здравствуйте! Этот бот поможет вам не забыть про свои олимпиады.\n\n"
+        "Он будет напоминать вам про начало именно ваших олимпиад.\n"
+        "По кнопке ниже вы можете перейти в меню для настройки напоминаний.\n"
+        "Также в меню можно попасть по команде /menu"
+    )
     keyboard = InlineKeyboardMarkup()
-    #в будущем добавляем сюда ссылку сайт
-    menu_button = InlineKeyboardButton("Главное меню", callback_data="go_to_menu")
+    menu_button = create_callback_button("Главное меню", MessageState.MENU)
     keyboard.add(menu_button)
+
     bot.send_message(message.chat.id, text=start_text, reply_markup=keyboard)
+
 @bot.message_handler(commands=["menu"])
 def menu_command(message):
-    menu(message.chat.id)
-@bot.callback_query_handler(func=lambda call: call.data=="go_to_menu")
-def menu_call(call):
-    menu(call.message.chat.id)
-def menu(id):
-    menu_text = "Здесь вы можете найти интересующую вас олимпиаду, либо управлять сделанными вами подписками(в разработке)."
+    handle_menu_state(message.chat.id)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_all_callbacks(call):
+    bot.answer_callback_query(call.id)
+    try:
+        callback = CallbackData.deserialize(call.data)
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return
+
+    id = call.message.chat.id
+    match callback.state:
+        case MessageState.MENU:
+            handle_menu_state(id, callback)
+        case MessageState.BRAND:
+            handle_brand_state(id, callback)
+        case MessageState.SUBJECT:
+            handle_subject_state(id, callback)
+        case MessageState.STAGE:
+            handle_stage_state(id, callback)
+        case MessageState.TURN:
+            handle_turn_state(id, callback)
+        case MessageState.CLASS:
+            handle_class_state(id, callback)
+        case MessageState.CARD:
+            handle_card_state(id, callback)
+
+def handle_menu_state(id, callback: CallbackData = None):
+    menu_text = (
+        "Здесь вы можете найти интересующую вас олимпиаду, "
+        "либо управлять сделанными вами подписками (в разработке)."
+    )
     keyboard = InlineKeyboardMarkup()
-    subscribe = InlineKeyboardButton("Мои подписки", callback_data="dodelaite_bazu_dannih")
-    olimpiad = InlineKeyboardButton("Найти олимпиаду", callback_data="brand:")
-    keyboard.add(olimpiad, subscribe)
+    #subscribe_button
+    olimpiads_button = create_callback_button("Выбрать олимпиаду", MessageState.BRAND)
+    keyboard.add(olimpiads_button)
     bot.send_message(id, text=menu_text, reply_markup=keyboard)
-@bot.callback_query_handler(func=lambda call: call.data[5] == ":")
-def search_management(call):
-    skip_turn = False
-    if call.data[:5] == "brand":
-        con = sqlite3.connect("TEST_db.db")
-        cursor = con.cursor()
-        keyboard = InlineKeyboardMarkup()
-        read_brand = "SELECT brand_id, brand_name FROM brand"
-        cursor.execute(read_brand)
-        data = cursor.fetchall()
-        for i in data:
-            button = InlineKeyboardButton(i[1], callback_data=(f"sbjct:{i[0]}"))
-            keyboard.add(button)
-        button = InlineKeyboardButton("Назад в главное меню", callback_data="go_to_menu")
+
+def handle_brand_state(id, callback: CallbackData):
+    keyboard = InlineKeyboardMarkup()
+
+    brands = safe_db_query("SELECT brand_id, brand_name FROM brand")
+    if not brands:
+        bot.send_message(id, "Нет доступных олимпиад.")
+        return
+    
+    for brand in brands:
+        button = create_callback_button(
+            text=brand['brand_name'],
+            state=MessageState.SUBJECT,
+            entity_id=brand['brand_id']
+        )
         keyboard.add(button)
-        bot.send_message(call.message.chat.id, "Выберите олимпиаду:", reply_markup=keyboard)
-        cursor.close()
-        con.close()
-    elif call.data[:5] == "sbjct":
-        con = sqlite3.connect("TEST_db.db")
-        cursor = con.cursor()
-        keyboard = InlineKeyboardMarkup()
-        read_subject = f"SELECT subject_id, subject_name FROM subject WHERE brand_id = {call.data[6:]}"
-        cursor.execute(read_subject)
-        data = cursor.fetchall()
-        for i in data:
-            button = InlineKeyboardButton(i[1], callback_data=f"stage:{i[0]}")
-            keyboard.add(button)
-        button = InlineKeyboardButton("Назад в главное меню", callback_data="go_to_menu")
+    keyboard.add(create_back_button())
+
+    bot.send_message(id, "Выберите бренд олимпиады:", reply_markup=keyboard)
+
+def handle_subject_state(id, callback: CallbackData):
+    if callback.entity_id is None:
+        bot.send_message(id, "Ошибка: не выбран бренд.")
+        return
+
+    keyboard = InlineKeyboardMarkup(row_width=1)
+
+    subjects = safe_db_query(
+        "SELECT subject_id, subject_name FROM subject WHERE brand_id = ?",
+        (callback.entity_id,)
+    )
+
+    if not subjects:
+        bot.send_message(id, "Нет предметов для этой олимпиады.")
+        return
+
+    for subject in subjects:
+        button = create_callback_button(
+            text=subject['subject_name'],
+            state=MessageState.STAGE,
+            entity_id=subject['subject_id']
+        )
         keyboard.add(button)
-        bot.send_message(call.message.chat.id, "Выберите предмет участия:", reply_markup=keyboard)
-        cursor.close()
-        con.close()
-    elif call.data[:5] == "stage":
-        con = sqlite3.connect("TEST_db.db")
-        cursor = con.cursor()
-        keyboard = InlineKeyboardMarkup()
-        date = int(datetime.datetime.now().year)
-        next = str(date) + "/" + str(date + 1)
-        prev = str(date - 1) + "/" + str(date)
-        read_stage = f"SELECT stage_id, stage_name FROM stage, season WHERE subject_id = {call.data[6:]} AND stage.season_id = season.season_id AND (season_name = \"{next}\" OR season_name = \"{prev}\")"
-        cursor.execute(read_stage)
-        data = cursor.fetchall()
-        for i in data:
-            button = InlineKeyboardButton(i[1], callback_data=f"turns:{i[0]}")
-            keyboard.add(button)
-        button = InlineKeyboardButton("Назад в главное меню", callback_data="go_to_menu")
+
+    keyboard.add(create_back_button(MessageState.MENU))
+
+    bot.send_message(id, "Выберите предмет участия:", reply_markup=keyboard)
+
+def handle_stage_state(id, callback: CallbackData):
+    if callback.entity_id is None:
+        bot.send_message(id, "Ошибка: не выбран предмет.")
+        return
+    keyboard = InlineKeyboardMarkup(row_width=1)
+
+    current_year = datetime.datetime.now().year
+    next_season = f"{current_year}/{current_year + 1}"
+    prev_season = f"{current_year - 1}/{current_year}"
+
+    query = """
+        SELECT stage.stage_id, stage.stage_name
+        FROM stage
+        JOIN season ON stage.season_id = season.season_id
+        WHERE season.subject_id = ?
+          AND (season.season_name = ? OR season.season_name = ?)
+    """
+    stages = safe_db_query(query, (callback.entity_id, next_season, prev_season))
+
+    if not stages:
+        bot.send_message(id, "Нет доступных этапов.")
+        return
+
+    for stage in stages:
+        button = create_callback_button(
+            text=stage['stage_name'],
+            state=MessageState.TURN,
+            entity_id=stage['stage_id']
+        )
         keyboard.add(button)
-        bot.send_message(call.message.chat.id, "Выберите этап олимпиады:", reply_markup=keyboard)
-        cursor.close()
-        con.close()
-    elif call.data[:5] == "turns":
-        con = sqlite3.connect("TEST_db.db")
-        cursor = con.cursor()
-        keyboard = InlineKeyboardMarkup()
-        read_turn = f"SELECT turn_id, turn_name FROM turn WHERE stage_id = {call.data[6:]}"
-        cursor.execute(read_turn)
-        data = cursor.fetchall()
-        for i in data:
-            button = InlineKeyboardButton(i[1], callback_data=f"class:{i[0]}")
-            keyboard.add(button)
-        button = InlineKeyboardButton("Назад в главное меню", callback_data="go_to_menu")
+
+    keyboard.add(create_back_button(MessageState.MENU))
+
+    bot.send_message(id, "Выберите этап олимпиады:", reply_markup=keyboard)
+
+def handle_turn_state(id, callback: CallbackData):
+    if callback.entity_id is None:
+        bot.send_message(id, "Ошибка: не выбран этап.")
+        return
+    keyboard = InlineKeyboardMarkup(row_width=1)
+
+    turns = safe_db_query(
+        "SELECT turn_id, turn_name FROM turn WHERE stage_id = ?",
+        (callback.entity_id,)
+    )
+
+    if not turns:
+        bot.send_message(id, "Нет доступных туров.")
+        return
+
+    if len(turns) == 1:
+        next_callback = CallbackData(
+            state=MessageState.CLASS,
+            entity_id=turns[0]['turn_id'],
+        )
+        handle_class_state(id, next_callback)
+        return
+    for turn in turns:
+        button = create_callback_button(
+            text=turn['turn_name'],
+            state=MessageState.CLASS,
+            entity_id=turn['turn_id']
+        )
         keyboard.add(button)
-        skip_turn = (len(data) <= 1)
-        if not skip_turn:
-            bot.send_message(call.message.chat.id, "Выберите номер тура олимпиады:", reply_markup=keyboard)
-        else:
-            turn_id = f"class:{data[0][0]}"
-        cursor.close()
-        con.close()
-    if skip_turn or call.data[:5] == "class":
-        if not skip_turn:
-            turn_id = call.data
-        con = sqlite3.connect("TEST_db.db")
-        cursor = con.cursor()
-        keyboard = InlineKeyboardMarkup()
-        read_class = f"SELECT class_id, class_name FROM class WHERE turn_id = {turn_id[6:]}"
-        cursor.execute(read_class)
-        data = cursor.fetchall()
-        for i in data:
-            button = InlineKeyboardButton(i[1], callback_data=f"ThEnd:")
-            keyboard.add(button)
-        button = InlineKeyboardButton("Назад в главное меню", callback_data="go_to_menu")
+
+    keyboard.add(create_back_button(MessageState.MENU))
+
+    bot.send_message(id, "Выберите номер тура олимпиады:", reply_markup=keyboard)
+
+def handle_class_state(id, callback: CallbackData):
+    if callback.entity_id is None:
+        bot.send_message(id, "Ошибка: не выбран тур.")
+        return
+    keyboard = InlineKeyboardMarkup(row_width=1)
+
+    classes = safe_db_query(
+        "SELECT class_id, class_name FROM class WHERE turn_id = ?",
+        (callback.entity_id,)
+    )
+
+    if not classes:
+        bot.send_message(id, "Нет доступных классов.")
+        return
+    
+    for cls in classes:
+        button = create_callback_button(
+            text=cls['class_name'],
+            state=MessageState.CARD,
+            entity_id=cls['class_id']
+        )
         keyboard.add(button)
-        bot.send_message(call.message.chat.id, "Выберите класс участия:", reply_markup=keyboard)
-        cursor.close()
-        con.close()
-    if call.data[:5] == "ThEnd":
-        end_text = "К сожалению, разработчики не добавили ничего про эту олимпиаду, можете вернуться в главное меню"
-        keyboard = InlineKeyboardMarkup()
-        button = InlineKeyboardButton("Назад в глваное меню", callback_data="go_to_menu")
-        keyboard.add(button)
-        bot.send_message(call.message.chat.id, text="К сожалению, разработчики не добавили ничего про эту олимпиаду, можете вернуться в главное меню", reply_markup=keyboard)
+    keyboard.add(create_back_button(MessageState.MENU))
+
+    bot.send_message(id, "Выберите класс участия:", reply_markup=keyboard)
+
+def handle_card_state(id, callback: CallbackData):
+    if callback.entity_id is None:
+        bot.send_message(id, "Ошибка: не выбран класс участия.")
+        return
+    keyboard = InlineKeyboardMarkup(row_width=1)
+
+    end_text = (
+        "✅ Выбор завершён!\n\n"
+        "К сожалению, разработчики не добавили ничего про эту олимпиаду.\n"
+        "Вы можете вернуться в главное меню."
+    )
+
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(create_back_button(MessageState.MENU))
+
+    bot.send_message(id, text=end_text, reply_markup=keyboard)
 
 bot.infinity_polling()
