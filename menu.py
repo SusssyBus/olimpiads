@@ -159,7 +159,8 @@ def handle_all_callbacks(call):
 def handle_menu_state(user_id, id, callback: CallbackData = None):
     menu_text = (
         "Здесь вы можете найти интересующую вас олимпиаду, "
-        "либо управлять сделанными вами подписками (в разработке)."
+        "либо управлять сделанными вами подписками.\n\n"
+        "Если вы не нашли свою олимпиаду, или нашли баг, сообщите об этом разработчикам: @ZHenka_kap, @Pr0oPan"
     )
     keyboard = InlineKeyboardMarkup()
     subscribe_button = create_callback_button("Посмотреть свои олимпиады", MessageState.SUBSCRIBE)
