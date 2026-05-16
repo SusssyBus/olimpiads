@@ -315,10 +315,46 @@ def handle_card_state(call, callback: CallbackData):
         return
     keyboard = InlineKeyboardMarkup()
 
+    user_id = call.from_user.id
+
+    tg_user = safe_db_query(
+        "SELECT tg_user_id FROM tg_User WHERE user_id = ?",
+        (user_id,)
+    )
+    if not tg_user:
+        bot.send_message(call.message.chat.id, "Вы не зарегистрированы. Напишите /start")
+        return
+    tg_user_id = tg_user[0]['tg_user_id']
+
+    query = """
+        SELECT 
+            d.date as event_date,
+            c.class_name,
+            t.turn_name,
+            s.stage_name,
+            subj.subject_name,
+            b.brand_name
+        FROM date d
+        JOIN class c ON d.class_id = c.class_id
+        JOIN turn t ON c.turn_id = t.turn_id
+        JOIN stage s ON t.stage_id = s.stage_id
+        JOIN season sea ON s.season_id = sea.season_id
+        JOIN subject subj ON sea.subject_id = subj.subject_id
+        JOIN brand b ON subj.brand_id = b.brand_id
+        WHERE d.class_id = ?
+        ORDER BY d.date DESC
+    """
+    olimpiad = safe_db_query(query, (callback.entity_id,))[0]
+
     end_text = (
         "Выбор завершён!\n\n"
-        "К сожалению, разработчики не добавили ничего про эту олимпиаду.\n"
-        "Вы можете вернуться в главное меню."
+        "Описание выбранной олимпиады:\n"
+        f"Бренд: {olimpiad["brand_name"]}\n"
+        f"Предмет: {olimpiad["subject_name"]}\n"
+        f"Этап: {olimpiad["stage_name"]}\n"
+        f"Тур: {olimpiad["turn_name"]}\n"
+        f"Класс участия: {olimpiad["class_name"]}\n\n"
+        f"Дата проведения олимпиады: {olimpiad["event_date"]}"
     )
 
     query1 = """
